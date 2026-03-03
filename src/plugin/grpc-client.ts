@@ -14,6 +14,7 @@ import * as crypto from 'crypto';
 import { ChatMessageSource } from './types.js';
 import { resolveModel } from './models.js';
 import { WindsurfCredentials, WindsurfError, WindsurfErrorCode } from './auth.js';
+import { getMetadataFields } from './discovery.js';
 
 // ============================================================================
 // Types
@@ -161,20 +162,25 @@ function encodeChatMessage(content: string, source: number, conversationId: stri
 }
 
 /**
- * Build the metadata message for the request
+ * Build the metadata message for Cascade requests
+ * Uses hardcoded field numbers that work with StartCascade/SendUserCascadeMessage
  * 
- * Metadata structure:
- * Field 1: ide_name (string)
- * Field 2: extension_version (string)
- * Field 3: api_key (string, required)
- * Field 4: locale (string)
- * Field 7: ide_version (string)
- * Field 12: extension_name (string)
+ * Discovered field mapping for Cascade:
+ *   api_key: 3, ide_name: 1, ide_version: 7, extension_version: 2, session_id: 10, locale: 4
  */
-import { getMetadataFields } from './discovery.js';
+function encodeCascadeMetadata(apiKey: string, version: string): number[] {
+  return [
+    ...encodeString(3, apiKey),                    // api_key = 3
+    ...encodeString(1, 'vscode'),                  // ide_name = 1
+    ...encodeString(7, version),                   // ide_version = 7
+    ...encodeString(2, '1.2.15'),                  // extension_version = 2
+    ...encodeString(10, generateUUID()),           // session_id = 10
+    ...encodeString(4, 'en-US'),                   // locale = 4
+  ];
+}
 
 /**
- * Build the metadata message for the request
+ * Build the metadata message for RawGetChatMessage requests
  * Dynamically maps fields using discovered extension.js values
  */
 function encodeMetadata(apiKey: string, version: string): number[] {
@@ -288,7 +294,7 @@ function buildChatRequest(
  *   Field 5: trajectory_type (CortexTrajectoryType enum, 0=unspecified)
  */
 function buildStartCascadeRequest(apiKey: string, version: string): Buffer {
-  const metadata = encodeMetadata(apiKey, version);
+  const metadata = encodeCascadeMetadata(apiKey, version);
   const request: number[] = [];
 
   // Field 1: metadata
@@ -353,7 +359,7 @@ function buildSendCascadeMessageRequest(
   modelEnum: number,
   modelUid?: string
 ): Buffer {
-  const metadata = encodeMetadata(apiKey, version);
+  const metadata = encodeCascadeMetadata(apiKey, version);
 
   // TextOrScopeItem: field 1 = text
   const textItem = encodeString(1, text);
@@ -673,15 +679,24 @@ function extractTextFromChunk(chunk: Buffer): string {
  *   Field 1: cascade_id (string)
  */
 function parseStartCascadeResponse(buffer: Buffer): string {
+  console.log(`[grpc-client] StartCascade raw response (${buffer.length} bytes):`, buffer.toString('hex'));
+  
   let offset = 0;
   while (offset < buffer.length) {
     const field = parseProtobufField(buffer, offset);
     if (!field) break;
     offset += field.bytesConsumed;
+    
+    console.log(`[grpc-client] Parsed field ${field.fieldNum}, wireType ${field.wireType}, bytesConsumed ${field.bytesConsumed}`);
+    
     if (field.fieldNum === 1 && field.wireType === 2 && Buffer.isBuffer(field.value)) {
-      return field.value.toString('utf8');
+      const cascadeId = field.value.toString('utf8');
+      console.log(`[grpc-client] Found cascade_id: ${cascadeId}`);
+      return cascadeId;
     }
   }
+  
+  console.log('[grpc-client] WARNING: No cascade_id found in response');
   return '';
 }
 
