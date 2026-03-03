@@ -163,20 +163,26 @@ export function getPort(): number {
         { encoding: 'utf8', timeout: 15000 }
       );
       
-      // Extract all listening ports
-      const portMatches = lsof.matchAll(/:(\d+)\s+\(LISTEN\)/g);
-      const ports = Array.from(portMatches).map(m => parseInt(m[1], 10));
-      
-      if (ports.length > 0) {
-        // If we have extension_server_port, prefer the port closest to it (usually +3)
+      // lsof output: COMMAND PID USER FD TYPE ... NAME (e.g., "3u  IPv4 ... TCP 127.0.0.1:42863 (LISTEN)")
+      // Parse fd (column 4, e.g., "3u") and port together, sort by fd ascending (lower fd = gRPC server)
+      const portFdPairsMac: { port: number; fd: number }[] = [];
+      for (const line of lsof.split('\n')) {
+        const portMatch = line.match(/:([\d]+)\s+\(LISTEN\)/);
+        const cols = line.trim().split(/\s+/);
+        const fdNum = cols[3]?.match(/^(\d+)/);
+        if (portMatch && fdNum) {
+          portFdPairsMac.push({ port: parseInt(portMatch[1], 10), fd: parseInt(fdNum[1], 10) });
+        }
+      }
+      if (portFdPairsMac.length > 0) {
+        portFdPairsMac.sort((a, b) => a.fd - b.fd);
+        const ports = portFdPairsMac.map(p => p.port);
         if (extPort) {
-          // Sort by distance from extPort and pick the closest one > extPort
-          const candidatePorts = ports.filter(p => p > extPort).sort((a, b) => a - b);
+          const candidatePorts = ports.filter(p => p > extPort);
           if (candidatePorts.length > 0) {
-            return candidatePorts[0]; // Return the first port after extPort
+            return candidatePorts[0];
           }
         }
-        // Otherwise just return the first listening port
         return ports[0];
       }
     } catch {
@@ -190,12 +196,22 @@ export function getPort(): number {
         { encoding: 'utf8', timeout: 15000 }
       );
       
-      const portMatches = lsof.matchAll(/:(\d+)\s+\(LISTEN\)/g);
-      const ports = Array.from(portMatches).map(m => parseInt(m[1], 10));
-      
-      if (ports.length > 0) {
+      // lsof output: COMMAND PID USER FD TYPE ... NAME (e.g., "3u  IPv4 ... TCP 127.0.0.1:42863 (LISTEN)")
+      // Parse fd and port together, sort by fd ascending (lower fd = gRPC server opened first)
+      const portFdPairsLsof: { port: number; fd: number }[] = [];
+      for (const line of lsof.split('\n')) {
+        const portMatch = line.match(/:([\d]+)\s+\(LISTEN\)/);
+        const cols = line.trim().split(/\s+/);
+        const fdNum = cols[3]?.match(/^(\d+)/);
+        if (portMatch && fdNum) {
+          portFdPairsLsof.push({ port: parseInt(portMatch[1], 10), fd: parseInt(fdNum[1], 10) });
+        }
+      }
+      if (portFdPairsLsof.length > 0) {
+        portFdPairsLsof.sort((a, b) => a.fd - b.fd);
+        const ports = portFdPairsLsof.map(p => p.port);
         if (extPort) {
-          const candidatePorts = ports.filter(p => p > extPort).sort((a, b) => a - b);
+          const candidatePorts = ports.filter(p => p > extPort);
           if (candidatePorts.length > 0) {
             return candidatePorts[0];
           }
@@ -213,13 +229,24 @@ export function getPort(): number {
         { encoding: 'utf8', timeout: 15000 }
       );
       
-      // ss output format: LISTEN 0 4096 127.0.0.1:PORT 0.0.0.0:*
-      // ss lists sockets in fd order; the main gRPC port is typically the first (lowest fd)
-      const ssPortMatches = ss.matchAll(/(?:127\.0\.0\.1|\[::\]|\*):([0-9]+)/g);
-      const ports = Array.from(ssPortMatches).map(m => parseInt(m[1], 10)).filter(p => p > 0);
-      
-      if (ports.length > 0) {
-        // Filter to ports above extension_server_port, but preserve ss output order (fd order)
+      // ss output format: LISTEN 0 4096 127.0.0.1:PORT 0.0.0.0:*  users:(("proc",pid=X,fd=Y))
+      // CRITICAL: ss output order is NOT guaranteed to be fd order.
+      // We must parse fd explicitly and sort ascending — lower fd = socket opened first = main gRPC server.
+      // Without this, ss may return the uvicorn web server port before the actual gRPC port.
+      const portFdPairs: { port: number; fd: number }[] = [];
+      for (const line of ss.split('\n')) {
+        const portMatch = line.match(/(?:127\.0\.0\.1|\[::\]|\*):([0-9]+)/);
+        const fdMatch = line.match(/\bfd=([0-9]+)/);
+        if (portMatch && fdMatch) {
+          const port = parseInt(portMatch[1], 10);
+          const fd = parseInt(fdMatch[1], 10);
+          if (port > 0) portFdPairs.push({ port, fd });
+        }
+      }
+      if (portFdPairs.length > 0) {
+        // Sort by fd ascending: lower fd = opened earlier = main gRPC server port
+        portFdPairs.sort((a, b) => a.fd - b.fd);
+        const ports = portFdPairs.map(p => p.port);
         if (extPort) {
           const candidatePorts = ports.filter(p => p > extPort);
           if (candidatePorts.length > 0) {
