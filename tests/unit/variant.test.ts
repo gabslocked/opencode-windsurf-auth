@@ -80,7 +80,7 @@ describe('string-UID models (bun)', () => {
   });
 
   test('enum-based models have no modelUid', () => {
-    const result = resolveModel('gpt-5.2:high');
+    const result = resolveModel('gpt-4o');
     expect(result.modelUid).toBeUndefined();
     expect(result.enumValue).toBeGreaterThan(0);
   });

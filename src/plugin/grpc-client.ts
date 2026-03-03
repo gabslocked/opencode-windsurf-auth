@@ -173,7 +173,7 @@ function encodeCascadeMetadata(apiKey: string, version: string): number[] {
     ...encodeString(3, apiKey),                    // api_key = 3
     ...encodeString(1, 'vscode'),                  // ide_name = 1
     ...encodeString(7, version),                   // ide_version = 7
-    ...encodeString(2, '1.2.15'),                  // extension_version = 2
+    ...encodeString(2, version),                   // extension_version = 2 (use windsurf version)
     ...encodeString(10, generateUUID()),           // session_id = 10
     ...encodeString(4, 'en-US'),                   // locale = 4
   ];
@@ -679,24 +679,15 @@ function extractTextFromChunk(chunk: Buffer): string {
  *   Field 1: cascade_id (string)
  */
 function parseStartCascadeResponse(buffer: Buffer): string {
-  console.log(`[grpc-client] StartCascade raw response (${buffer.length} bytes):`, buffer.toString('hex'));
-  
   let offset = 0;
   while (offset < buffer.length) {
     const field = parseProtobufField(buffer, offset);
     if (!field) break;
     offset += field.bytesConsumed;
-    
-    console.log(`[grpc-client] Parsed field ${field.fieldNum}, wireType ${field.wireType}, bytesConsumed ${field.bytesConsumed}`);
-    
     if (field.fieldNum === 1 && field.wireType === 2 && Buffer.isBuffer(field.value)) {
-      const cascadeId = field.value.toString('utf8');
-      console.log(`[grpc-client] Found cascade_id: ${cascadeId}`);
-      return cascadeId;
+      return field.value.toString('utf8');
     }
   }
-  
-  console.log('[grpc-client] WARNING: No cascade_id found in response');
   return '';
 }
 
