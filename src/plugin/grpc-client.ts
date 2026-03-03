@@ -11,11 +11,23 @@
 
 import * as http2 from 'http2';
 import * as crypto from 'crypto';
+import { spawn } from 'child_process';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { ChatMessageSource } from './types.js';
 import { resolveModel } from './models.js';
-import { WindsurfCredentials, WindsurfError, WindsurfErrorCode } from './auth.js';
+import { WindsurfCredentials, WindsurfError, WindsurfErrorCode, getCredentials } from './auth.js';
 import { getMetadataFields } from './discovery.js';
 
+// ============================================================================
+// Bun/Node.js Runtime Detection
+// ============================================================================
+
+const IS_BUN = typeof (process as any).isBun !== 'undefined' || 
+               (process.versions as any).bun !== undefined;
+
+// ============================================================================
+// Types
 // ============================================================================
 // Types
 // ============================================================================
@@ -797,19 +809,24 @@ function parseTrajectoryStepsResponse(buffer: Buffer): ParsedStep[] {
 // gRPC HTTP/2 Helpers with Auto-Retry
 // ============================================================================
 
-import { getCredentials } from './auth.js';
-
 /**
  * Make a unary gRPC call and return the response body as a Buffer
  * Auto-retries with fresh credentials on connection failure (Windsurf restart)
+ * Uses Node.js wrapper when running under Bun for HTTP/2 compatibility
  */
 function grpcUnaryCall(
   port: number,
   csrfToken: string,
-  path: string,
+  grpcPath: string,
   body: Buffer,
   retryCount: number = 0
 ): Promise<Buffer> {
+  // Use Node.js wrapper on Bun to avoid HTTP/2 bugs
+  if (IS_BUN) {
+    return grpcUnaryCallNode(port, csrfToken, grpcPath, body, retryCount);
+  }
+  
+  // Use native http2 on Node.js
   return new Promise((resolve, reject) => {
     const client = http2.connect(`http://localhost:${port}`);
     const chunks: Buffer[] = [];
@@ -821,7 +838,7 @@ function grpcUnaryCall(
         try {
           console.log('[grpc-client] Connection refused, retrying with fresh credentials...');
           const freshCreds = getCredentials();
-          const result = await grpcUnaryCall(freshCreds.port, freshCreds.csrfToken, path, body, retryCount + 1);
+          const result = await grpcUnaryCall(freshCreds.port, freshCreds.csrfToken, grpcPath, body, retryCount + 1);
           resolve(result);
           return;
         } catch (retryErr) {
@@ -838,7 +855,7 @@ function grpcUnaryCall(
 
     const req = client.request({
       ':method': 'POST',
-      ':path': path,
+      ':path': grpcPath,
       'content-type': 'application/grpc',
       'te': 'trailers',
       'x-codeium-csrf-token': csrfToken,
@@ -889,6 +906,105 @@ function grpcUnaryCall(
     req.write(body);
     req.end();
   });
+}
+
+/**
+ * Make a unary gRPC call using Node.js wrapper (for Bun HTTP/2 compatibility)
+ */
+function grpcUnaryCallNode(
+  port: number,
+  csrfToken: string,
+  path: string,
+  body: Buffer,
+  retryCount: number = 0
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const wrapperPath = getNodeWrapperPath();
+    const base64Body = body.length > 0 ? body.toString('base64') : '';
+    
+    const args = [
+      wrapperPath,
+      String(port),
+      csrfToken,
+      path,
+      base64Body
+    ].filter(Boolean);
+    
+    const child = spawn('node', args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30000,
+    });
+    
+    let stdout = '';
+    let stderr = '';
+    
+    child.stdout?.on('data', (data) => {
+      stdout += data.toString();
+    });
+    
+    child.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    child.on('close', async (code) => {
+      // Retry on connection failure
+      if (code !== 0 && retryCount === 0 && stderr.includes('ECONNREFUSED')) {
+        try {
+          console.log('[grpc-client] Connection refused, retrying with fresh credentials...');
+          const freshCreds = getCredentials();
+          const result = await grpcUnaryCallNode(freshCreds.port, freshCreds.csrfToken, path, body, retryCount + 1);
+          resolve(result);
+          return;
+        } catch (retryErr) {
+          reject(retryErr);
+          return;
+        }
+      }
+      
+      if (code !== 0) {
+        let errorData;
+        try {
+          errorData = JSON.parse(stderr);
+        } catch {
+          errorData = { error: stderr || 'Unknown error' };
+        }
+        reject(new WindsurfError(
+          `Connection failed: ${errorData.error || 'Unknown error'}`,
+          WindsurfErrorCode.CONNECTION_FAILED
+        ));
+        return;
+      }
+      
+      // Decode base64 response
+      try {
+        const response = Buffer.from(stdout.trim(), 'base64');
+        resolve(response);
+      } catch (err) {
+        reject(new WindsurfError(
+          `Failed to decode response: ${err}`,
+          WindsurfErrorCode.STREAM_ERROR
+        ));
+      }
+    });
+    
+    child.on('error', (err) => {
+      reject(new WindsurfError(
+        `Failed to spawn Node.js: ${err.message}. Is Node.js installed?`,
+        WindsurfErrorCode.CONNECTION_FAILED
+      ));
+    });
+  });
+}
+
+/**
+ * Get path to the Node.js gRPC wrapper script for Bun HTTP/2 compatibility
+ */
+function getNodeWrapperPath(): string {
+  // When running from dist/, the wrapper is in the project root
+  const currentFile = fileURLToPath(import.meta.url);
+  const currentDir = path.dirname(currentFile);
+  // Go up from dist/src/plugin/ to project root
+  return path.resolve(currentDir, '..', '..', '..', 'grpc-wrapper.mjs');
 }
 
 // ============================================================================
