@@ -133,7 +133,7 @@ gemini-3.0-flash:high
 ## 🔧 How It Works
 
 ```
-┌─────────────┐     OpenAI API      ┌──────────────┐
+┌─────────────┐      OpenAI API      ┌──────────────┐
 │   OpenCode  │ ◄──────────────────► │  Plugin      │
 │   CLI       │    localhost:42100   │  (Bun HTTP)  │
 └─────────────┘                      └──────┬───────┘
