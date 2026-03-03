@@ -3,6 +3,10 @@
  * 
  * Implements HTTP/2-based gRPC communication with the local Windsurf language server.
  * Uses manual protobuf encoding (no external protobuf library needed).
+ * 
+ * Two code paths:
+ *   - Legacy (RawGetChatMessage): for older models with enum < 280 and no modelUid
+ *   - Cascade flow (StartCascade → SendUserCascadeMessage → poll): for all premium models
  */
 
 import * as http2 from 'http2';
@@ -52,21 +56,21 @@ function encodeVarint(value: number | bigint): number[] {
  */
 function encodeString(fieldNum: number, str: string): number[] {
   const strBytes = Buffer.from(str, 'utf8');
-  return [(fieldNum << 3) | 2, ...encodeVarint(strBytes.length), ...strBytes];
+  return [...encodeVarint((fieldNum << 3) | 2), ...encodeVarint(strBytes.length), ...strBytes];
 }
 
 /**
  * Encode a nested message field (wire type 2: length-delimited)
  */
 function encodeMessage(fieldNum: number, data: number[]): number[] {
-  return [(fieldNum << 3) | 2, ...encodeVarint(data.length), ...data];
+  return [...encodeVarint((fieldNum << 3) | 2), ...encodeVarint(data.length), ...data];
 }
 
 /**
  * Encode a varint field (wire type 0)
  */
 function encodeVarintField(fieldNum: number, value: number | bigint): number[] {
-  return [(fieldNum << 3) | 0, ...encodeVarint(value)];
+  return [...encodeVarint((fieldNum << 3) | 0), ...encodeVarint(value)];
 }
 
 // ============================================================================
@@ -272,6 +276,201 @@ function buildChatRequest(
 }
 
 // ============================================================================
+// Cascade Flow Request Building
+// ============================================================================
+
+/**
+ * Build StartCascadeRequest
+ * 
+ * StartCascadeRequest:
+ *   Field 1: metadata (Metadata)
+ *   Field 4: source (CortexTrajectorySource enum, 0=unspecified)
+ *   Field 5: trajectory_type (CortexTrajectoryType enum, 0=unspecified)
+ */
+function buildStartCascadeRequest(apiKey: string, version: string): Buffer {
+  const metadata = encodeMetadata(apiKey, version);
+  const request: number[] = [];
+
+  // Field 1: metadata
+  request.push(...encodeMessage(1, metadata));
+  // Field 4: source = 0 (CORTEX_TRAJECTORY_SOURCE_UNSPECIFIED)
+  // Field 5: trajectory_type = 0 (CORTEX_TRAJECTORY_TYPE_UNSPECIFIED)
+  // Both are 0 so we can omit them (proto3 default)
+
+  return grpcFrame(Buffer.from(request));
+}
+
+/**
+ * Build SendUserCascadeMessageRequest
+ * 
+ * SendUserCascadeMessageRequest:
+ *   Field 1: cascade_id (string)
+ *   Field 2: items (repeated TextOrScopeItem)
+ *   Field 3: metadata (Metadata)
+ *   Field 5: cascade_config (CascadeConfig)
+ * 
+ * TextOrScopeItem:
+ *   Field 1: text (string)
+ * 
+ * CascadeConfig:
+ *   Field 1: planner_config (CascadePlannerConfig)
+ *   Field 7: brain_config (BrainConfig)
+ * 
+ * CascadePlannerConfig:
+ *   Field 2: conversational (CascadeConversationalPlannerConfig)
+ *   Field 13: tool_config (CascadeToolConfig)
+ *   Field 35: requested_model_uid (string) — for string-UID models
+ *   Field 15: requested_model_deprecated (ModelOrAlias) — for enum models
+ * 
+ * CascadeConversationalPlannerConfig:
+ *   Field 4: planner_mode (ConversationalPlannerMode, 1=CONVERSATIONAL)
+ * 
+ * CascadeToolConfig:
+ *   Field 8: run_command (RunCommandToolConfig)
+ * 
+ * RunCommandToolConfig:
+ *   Field 3: auto_command_config (AutoCommandConfig)
+ * 
+ * AutoCommandConfig:
+ *   Field 6: auto_execution_policy (CascadeCommandsAutoExecution, 3=ALWAYS)
+ * 
+ * BrainConfig:
+ *   Field 1: enabled (bool)
+ *   Field 6: update_strategy (BrainUpdateStrategy)
+ * 
+ * BrainUpdateStrategy:
+ *   Field 6: dynamic_update (DynamicBrainUpdateConfig, empty message)
+ * 
+ * ModelOrAlias:
+ *   Field 1: model (Model enum)
+ *   Field 3: model_uid (string)
+ */
+function buildSendCascadeMessageRequest(
+  apiKey: string,
+  version: string,
+  cascadeId: string,
+  text: string,
+  modelEnum: number,
+  modelUid?: string
+): Buffer {
+  const metadata = encodeMetadata(apiKey, version);
+
+  // TextOrScopeItem: field 1 = text
+  const textItem = encodeString(1, text);
+
+  // ModelOrAlias for the requested model
+  let requestedModelBytes: number[];
+  if (modelUid) {
+    // String-UID model: field 3 = model_uid
+    requestedModelBytes = encodeString(3, modelUid);
+  } else {
+    // Enum model: field 1 = model enum value
+    requestedModelBytes = encodeVarintField(1, modelEnum);
+  }
+
+  // CascadeConversationalPlannerConfig: field 4 = planner_mode = 1 (CONVERSATIONAL)
+  const conversationalConfig = encodeVarintField(4, 1);
+
+  // AutoCommandConfig: field 6 = auto_execution_policy = 3 (ALWAYS)
+  const autoCommandConfig = encodeVarintField(6, 3);
+
+  // RunCommandToolConfig: field 3 = auto_command_config
+  const runCommandConfig = encodeMessage(3, autoCommandConfig);
+
+  // CascadeToolConfig: field 8 = run_command
+  const toolConfig = encodeMessage(8, runCommandConfig);
+
+  // CascadePlannerConfig:
+  //   field 2 = conversational
+  //   field 13 = tool_config
+  //   field 35 = requested_model_uid (string-UID) OR field 15 = requested_model_deprecated (ModelOrAlias)
+  const plannerConfig: number[] = [
+    ...encodeMessage(2, conversationalConfig),
+    ...encodeMessage(13, toolConfig),
+  ];
+  if (modelUid) {
+    // field 35: requested_model_uid (string)
+    plannerConfig.push(...encodeString(35, modelUid));
+  } else {
+    // field 15: requested_model_deprecated (ModelOrAlias)
+    plannerConfig.push(...encodeMessage(15, requestedModelBytes));
+  }
+
+  // DynamicBrainUpdateConfig: empty message
+  const dynamicBrainUpdate: number[] = [];
+
+  // BrainUpdateStrategy: field 6 = dynamic_update
+  const brainUpdateStrategy = encodeMessage(6, dynamicBrainUpdate);
+
+  // BrainConfig: field 1 = enabled (true=1), field 6 = update_strategy
+  const brainConfig: number[] = [
+    ...encodeVarintField(1, 1),
+    ...encodeMessage(6, brainUpdateStrategy),
+  ];
+
+  // CascadeConfig: field 1 = planner_config, field 7 = brain_config
+  const cascadeConfig: number[] = [
+    ...encodeMessage(1, plannerConfig),
+    ...encodeMessage(7, brainConfig),
+  ];
+
+  // Build the full request
+  const request: number[] = [];
+
+  // Field 1: cascade_id
+  request.push(...encodeString(1, cascadeId));
+
+  // Field 2: items (repeated TextOrScopeItem)
+  request.push(...encodeMessage(2, textItem));
+
+  // Field 3: metadata
+  request.push(...encodeMessage(3, metadata));
+
+  // Field 5: cascade_config
+  request.push(...encodeMessage(5, cascadeConfig));
+
+  return grpcFrame(Buffer.from(request));
+}
+
+/**
+ * Build GetCascadeTrajectoryStepsRequest
+ * 
+ * Field 1: cascade_id (string)
+ * Field 2: step_offset (uint32)
+ */
+function buildGetTrajectoryStepsRequest(cascadeId: string, stepOffset: number = 0): Buffer {
+  const request: number[] = [];
+  request.push(...encodeString(1, cascadeId));
+  if (stepOffset > 0) {
+    request.push(...encodeVarintField(2, stepOffset));
+  }
+  return grpcFrame(Buffer.from(request));
+}
+
+/**
+ * Build GetCascadeTrajectoryRequest (for status polling)
+ * 
+ * Field 1: cascade_id (string)
+ */
+function buildGetTrajectoryRequest(cascadeId: string): Buffer {
+  const request: number[] = [];
+  request.push(...encodeString(1, cascadeId));
+  return grpcFrame(Buffer.from(request));
+}
+
+/**
+ * Wrap a protobuf payload in a gRPC frame
+ * Format: 1 byte compression (0) + 4 bytes length + payload
+ */
+function grpcFrame(payload: Buffer): Buffer {
+  const frame = Buffer.alloc(5 + payload.length);
+  frame[0] = 0; // No compression
+  frame.writeUInt32BE(payload.length, 1);
+  payload.copy(frame, 5);
+  return frame;
+}
+
+// ============================================================================
 // Response Parsing (Protobuf Decoding)
 // ============================================================================
 
@@ -460,19 +659,394 @@ function extractTextFromChunk(chunk: Buffer): string {
   }
 
   // Last resort: heuristic extraction for edge cases
-  return extractTextHeuristic(chunk);
+  return '';
+}
+
+// ============================================================================
+// Cascade Response Parsing
+// ============================================================================
+
+/**
+ * Parse StartCascadeResponse to extract cascade_id
+ * 
+ * StartCascadeResponse:
+ *   Field 1: cascade_id (string)
+ */
+function parseStartCascadeResponse(buffer: Buffer): string {
+  let offset = 0;
+  while (offset < buffer.length) {
+    const field = parseProtobufField(buffer, offset);
+    if (!field) break;
+    offset += field.bytesConsumed;
+    if (field.fieldNum === 1 && field.wireType === 2 && Buffer.isBuffer(field.value)) {
+      return field.value.toString('utf8');
+    }
+  }
+  return '';
 }
 
 /**
- * Fallback heuristic text extraction - DISABLED
- * The proper protobuf parsing should handle all cases.
- * If it fails, we return empty rather than risk returning garbage.
+ * Parse GetCascadeTrajectoryResponse to extract status
+ * 
+ * GetCascadeTrajectoryResponse:
+ *   Field 1: trajectory (CortexTrajectory)
+ *   Field 2: status (CascadeRunStatus enum)
+ *     CASCADE_RUN_STATUS_IDLE = 1
+ *     CASCADE_RUN_STATUS_RUNNING = 2
  */
-function extractTextHeuristic(_chunk: Buffer): string {
-  // Heuristic extraction is too unreliable and returns garbage metadata.
-  // The proper protobuf parsing (extractTextFromResponse) should work.
-  // If it doesn't, we return empty string rather than corrupted output.
-  return '';
+function parseTrajectoryStatus(buffer: Buffer): number {
+  let offset = 0;
+  while (offset < buffer.length) {
+    const field = parseProtobufField(buffer, offset);
+    if (!field) break;
+    offset += field.bytesConsumed;
+    if (field.fieldNum === 2 && field.wireType === 0 && typeof field.value === 'bigint') {
+      return Number(field.value);
+    }
+  }
+  return 0; // UNSPECIFIED
+}
+
+/**
+ * Parse GetCascadeTrajectoryStepsResponse to extract planner response text
+ * 
+ * GetCascadeTrajectoryStepsResponse:
+ *   Field 1: steps (repeated CortexTrajectoryStep)
+ * 
+ * CortexTrajectoryStep:
+ *   Field 1: type (CortexStepType enum)
+ *     CORTEX_STEP_TYPE_PLANNER_RESPONSE = 15
+ *   Field 4: status (CortexStepStatus enum)
+ *     CORTEX_STEP_STATUS_DONE = 3
+ *     CORTEX_STEP_STATUS_GENERATING = 8
+ *   Field 20: planner_response (CortexStepPlannerResponse)
+ * 
+ * CortexStepPlannerResponse:
+ *   Field 1: response (string) ← the text
+ *   Field 3: thinking (string)
+ */
+interface ParsedStep {
+  type: number;
+  status: number;
+  text: string;
+  thinking: string;
+}
+
+function parsePlannerResponseStep(stepBuffer: Buffer): ParsedStep {
+  let offset = 0;
+  let type = 0;
+  let status = 0;
+  let text = '';
+  let thinking = '';
+
+  while (offset < stepBuffer.length) {
+    const field = parseProtobufField(stepBuffer, offset);
+    if (!field) break;
+    offset += field.bytesConsumed;
+
+    if (field.fieldNum === 1 && field.wireType === 0 && typeof field.value === 'bigint') {
+      type = Number(field.value);
+    } else if (field.fieldNum === 4 && field.wireType === 0 && typeof field.value === 'bigint') {
+      status = Number(field.value);
+    } else if (field.fieldNum === 20 && field.wireType === 2 && Buffer.isBuffer(field.value)) {
+      // Parse CortexStepPlannerResponse
+      let innerOffset = 0;
+      const inner = field.value;
+      while (innerOffset < inner.length) {
+        const innerField = parseProtobufField(inner, innerOffset);
+        if (!innerField) break;
+        innerOffset += innerField.bytesConsumed;
+        if (innerField.fieldNum === 1 && innerField.wireType === 2 && Buffer.isBuffer(innerField.value)) {
+          text = innerField.value.toString('utf8');
+        } else if (innerField.fieldNum === 3 && innerField.wireType === 2 && Buffer.isBuffer(innerField.value)) {
+          thinking = innerField.value.toString('utf8');
+        }
+      }
+    }
+  }
+
+  return { type, status, text, thinking };
+}
+
+function parseTrajectoryStepsResponse(buffer: Buffer): ParsedStep[] {
+  const steps: ParsedStep[] = [];
+  let offset = 0;
+
+  while (offset < buffer.length) {
+    const field = parseProtobufField(buffer, offset);
+    if (!field) break;
+    offset += field.bytesConsumed;
+
+    // Field 1: steps (repeated CortexTrajectoryStep)
+    if (field.fieldNum === 1 && field.wireType === 2 && Buffer.isBuffer(field.value)) {
+      const step = parsePlannerResponseStep(field.value);
+      steps.push(step);
+    }
+  }
+
+  return steps;
+}
+
+// ============================================================================
+// gRPC HTTP/2 Helpers with Auto-Retry
+// ============================================================================
+
+import { getCredentials } from './auth.js';
+
+/**
+ * Make a unary gRPC call and return the response body as a Buffer
+ * Auto-retries with fresh credentials on connection failure (Windsurf restart)
+ */
+function grpcUnaryCall(
+  port: number,
+  csrfToken: string,
+  path: string,
+  body: Buffer,
+  retryCount: number = 0
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const client = http2.connect(`http://localhost:${port}`);
+    const chunks: Buffer[] = [];
+
+    client.on('error', async (err) => {
+      client.close();
+      // Retry with fresh credentials on connection failure (Windsurf may have restarted)
+      if (retryCount === 0 && (err as any).code === 'ECONNREFUSED') {
+        try {
+          console.log('[grpc-client] Connection refused, retrying with fresh credentials...');
+          const freshCreds = getCredentials();
+          const result = await grpcUnaryCall(freshCreds.port, freshCreds.csrfToken, path, body, retryCount + 1);
+          resolve(result);
+          return;
+        } catch (retryErr) {
+          reject(retryErr);
+          return;
+        }
+      }
+      reject(new WindsurfError(
+        `Connection failed: ${err.message}`,
+        WindsurfErrorCode.CONNECTION_FAILED,
+        err
+      ));
+    });
+
+    const req = client.request({
+      ':method': 'POST',
+      ':path': path,
+      'content-type': 'application/grpc',
+      'te': 'trailers',
+      'x-codeium-csrf-token': csrfToken,
+    });
+
+    req.on('data', (chunk: Buffer) => {
+      chunks.push(chunk);
+    });
+
+    let grpcStatus = '0';
+    let grpcMessage = '';
+
+    req.on('trailers', (trailers) => {
+      grpcStatus = String(trailers['grpc-status'] ?? '0');
+      grpcMessage = String(trailers['grpc-message'] ?? '');
+    });
+
+    req.on('end', () => {
+      client.close();
+      if (grpcStatus !== '0') {
+        reject(new WindsurfError(
+          `gRPC error ${grpcStatus}: ${grpcMessage ? decodeURIComponent(grpcMessage) : 'Unknown error'}`,
+          WindsurfErrorCode.STREAM_ERROR
+        ));
+        return;
+      }
+      const full = Buffer.concat(chunks);
+      // Strip gRPC frame header (5 bytes) if present
+      if (full.length >= 5 && full[0] === 0) {
+        const msgLen = full.readUInt32BE(1);
+        if (full.length >= 5 + msgLen) {
+          resolve(full.subarray(5, 5 + msgLen));
+          return;
+        }
+      }
+      resolve(full);
+    });
+
+    req.on('error', (err) => {
+      client.close();
+      reject(new WindsurfError(
+        `Request failed: ${err.message}`,
+        WindsurfErrorCode.STREAM_ERROR,
+        err
+      ));
+    });
+
+    req.write(body);
+    req.end();
+  });
+}
+
+// ============================================================================
+// Cascade Flow Implementation
+// ============================================================================
+
+const GRPC_PATH_START_CASCADE = '/exa.language_server_pb.LanguageServerService/StartCascade';
+const GRPC_PATH_SEND_CASCADE_MSG = '/exa.language_server_pb.LanguageServerService/SendUserCascadeMessage';
+const GRPC_PATH_GET_TRAJECTORY = '/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory';
+const GRPC_PATH_GET_TRAJECTORY_STEPS = '/exa.language_server_pb.LanguageServerService/GetCascadeTrajectorySteps';
+
+/**
+ * Start a new Cascade session and return the cascade_id
+ */
+async function startCascade(credentials: WindsurfCredentials): Promise<string> {
+  const { csrfToken, port, apiKey, version } = credentials;
+  const body = buildStartCascadeRequest(apiKey, version);
+  const response = await grpcUnaryCall(port, csrfToken, GRPC_PATH_START_CASCADE, body);
+  const cascadeId = parseStartCascadeResponse(response);
+  if (!cascadeId) {
+    throw new WindsurfError('StartCascade returned empty cascade_id', WindsurfErrorCode.STREAM_ERROR);
+  }
+  return cascadeId;
+}
+
+/**
+ * Send a user message to an existing Cascade session
+ */
+async function sendCascadeMessage(
+  credentials: WindsurfCredentials,
+  cascadeId: string,
+  text: string,
+  modelEnum: number,
+  modelUid?: string
+): Promise<void> {
+  const { csrfToken, port, apiKey, version } = credentials;
+  const body = buildSendCascadeMessageRequest(apiKey, version, cascadeId, text, modelEnum, modelUid);
+  await grpcUnaryCall(port, csrfToken, GRPC_PATH_SEND_CASCADE_MSG, body);
+}
+
+/**
+ * Get the current run status of a Cascade session
+ * Returns: 0=UNSPECIFIED, 1=IDLE, 2=RUNNING, 3=CANCELING, 4=BUSY
+ */
+async function getCascadeStatus(credentials: WindsurfCredentials, cascadeId: string): Promise<number> {
+  const { csrfToken, port } = credentials;
+  const body = buildGetTrajectoryRequest(cascadeId);
+  const response = await grpcUnaryCall(port, csrfToken, GRPC_PATH_GET_TRAJECTORY, body);
+  return parseTrajectoryStatus(response);
+}
+
+/**
+ * Get trajectory steps for a Cascade session
+ */
+async function getTrajectorySteps(
+  credentials: WindsurfCredentials,
+  cascadeId: string,
+  stepOffset: number = 0
+): Promise<ParsedStep[]> {
+  const { csrfToken, port } = credentials;
+  const body = buildGetTrajectoryStepsRequest(cascadeId, stepOffset);
+  const response = await grpcUnaryCall(port, csrfToken, GRPC_PATH_GET_TRAJECTORY_STEPS, body);
+  return parseTrajectoryStepsResponse(response);
+}
+
+/**
+ * Stream chat via the Cascade flow (for premium models)
+ * 
+ * Flow:
+ * 1. StartCascade → get cascade_id
+ * 2. SendUserCascadeMessage (with model config)
+ * 3. Poll GetCascadeTrajectorySteps for PLANNER_RESPONSE steps
+ * 4. Yield text as it arrives (streaming from GENERATING steps)
+ * 5. Stop when CASCADE_RUN_STATUS_IDLE
+ */
+async function* streamChatCascade(
+  credentials: WindsurfCredentials,
+  options: Pick<StreamChatOptions, 'model' | 'messages'>,
+  modelEnum: number,
+  modelUid?: string
+): AsyncGenerator<string, void, unknown> {
+  // Build the user message text (combine system + user messages)
+  const systemMsg = options.messages.find(m => m.role === 'system');
+  const userMessages = options.messages.filter(m => m.role !== 'system' && m.role !== 'assistant');
+  const lastUserMsg = userMessages[userMessages.length - 1];
+
+  let text = lastUserMsg?.content ?? '';
+  if (systemMsg && text) {
+    text = `${systemMsg.content}\n\n${text}`;
+  } else if (systemMsg) {
+    text = systemMsg.content;
+  }
+
+  // Step 1: Start cascade
+  const cascadeId = await startCascade(credentials);
+
+  // Step 2: Send message
+  await sendCascadeMessage(credentials, cascadeId, text, modelEnum, modelUid);
+
+  // Step 3: Poll for response
+  const pollIntervalMs = 300;
+  const maxWaitMs = 120_000;
+  const startTime = Date.now();
+
+  let lastYieldedText = '';
+  let idleCount = 0;
+
+  while (Date.now() - startTime < maxWaitMs) {
+    await new Promise(r => setTimeout(r, pollIntervalMs));
+
+    // Get current steps
+    const steps = await getTrajectorySteps(credentials, cascadeId, 0);
+
+    // Find planner response steps
+    for (const step of steps) {
+      if (step.type === 15 && step.text) {
+        // Yield any new text (streaming delta)
+        if (step.text.length > lastYieldedText.length) {
+          const delta = step.text.slice(lastYieldedText.length);
+          lastYieldedText = step.text;
+          yield delta;
+        }
+      }
+    }
+
+    // Check if cascade is done
+    const status = await getCascadeStatus(credentials, cascadeId);
+    if (status === 1) {
+      idleCount++;
+      // Wait for one more poll to ensure we got all text
+      if (idleCount >= 2) {
+        // Final check for any remaining text
+        const finalSteps = await getTrajectorySteps(credentials, cascadeId, 0);
+        for (const step of finalSteps) {
+          if (step.type === 15 && step.text) {
+            if (step.text.length > lastYieldedText.length) {
+              const delta = step.text.slice(lastYieldedText.length);
+              lastYieldedText = step.text;
+              yield delta;
+            }
+          }
+        }
+        break;
+      }
+    } else {
+      idleCount = 0;
+    }
+  }
+}
+
+// ============================================================================
+// Model Routing
+// ============================================================================
+
+/**
+ * Determine if a model should use the Cascade flow
+ * 
+ /**
+ * Determines whether to use the Cascade flow for a given model.
+ * Only use Cascade when we have an explicit string UID — models without UIDs
+ * go through the legacy RawGetChatMessage endpoint.
+ */
+function shouldUseCascade(_modelEnum: number, modelUid?: string): boolean {
+  return !!modelUid;
 }
 
 // ============================================================================
@@ -490,83 +1064,120 @@ export function streamChat(
   credentials: WindsurfCredentials,
   options: StreamChatOptions
 ): Promise<string> {
-  const { csrfToken, port, apiKey, version } = credentials;
+  const { csrfToken: _csrfToken, port: _port, apiKey, version } = credentials;
   const resolved = resolveModel(options.model);
   const modelEnum = resolved.enumValue;
-  const modelName = resolved.modelUid ?? (resolved.variant ? `${resolved.modelId}:${resolved.variant}` : resolved.modelId);
-  const body = buildChatRequest(apiKey, version, modelEnum, options.messages, modelName);
+  const modelUid = resolved.modelUid;
+  const modelName = modelUid ?? (resolved.variant ? `${resolved.modelId}:${resolved.variant}` : resolved.modelId);
 
-  return new Promise((resolve, reject) => {
-    const client = http2.connect(`http://localhost:${port}`);
-    const chunks: string[] = [];
-
-    client.on('error', (err) => {
-      options.onError?.(err);
-      reject(new WindsurfError(
-        `Connection failed: ${err.message}`,
-        WindsurfErrorCode.CONNECTION_FAILED,
-        err
-      ));
-    });
-
-    client.on('connect', () => {
-      const req = client.request({
-        ':method': 'POST',
-        ':path': '/exa.language_server_pb.LanguageServerService/RawGetChatMessage',
-        'content-type': 'application/grpc',
-        'te': 'trailers',
-        'x-codeium-csrf-token': csrfToken,
-      });
-
-      req.on('data', (chunk: Buffer) => {
-        const text = extractTextFromChunk(chunk);
-        if (text) {
-          chunks.push(text);
-          options.onChunk?.(text);
+  if (shouldUseCascade(modelEnum, modelUid)) {
+    // Use Cascade flow for premium models
+    return new Promise(async (resolve, reject) => {
+      const chunks: string[] = [];
+      try {
+        const gen = streamChatCascade(credentials, options, modelEnum, modelUid);
+        for await (const chunk of gen) {
+          chunks.push(chunk);
+          options.onChunk?.(chunk);
         }
-      });
-
-      req.on('trailers', (trailers) => {
-        const status = trailers['grpc-status'];
-        if (status !== '0') {
-          const message = trailers['grpc-message'];
-          const err = new WindsurfError(
-            `gRPC error ${status}: ${message ? decodeURIComponent(message as string) : 'Unknown error'}`,
-            WindsurfErrorCode.STREAM_ERROR
-          );
-          options.onError?.(err);
-          reject(err);
-        }
-      });
-
-      req.on('end', () => {
-        client.close();
         const fullText = chunks.join('');
         options.onComplete?.(fullText);
         resolve(fullText);
-      });
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        options.onError?.(error);
+        reject(error);
+      }
+    });
+  }
 
-      req.on('error', (err) => {
+  // Legacy RawGetChatMessage flow
+  const body = buildChatRequest(apiKey, version, modelEnum, options.messages, modelName);
+
+  return new Promise((resolve, reject) => {
+    let retryAttempted = false;
+    
+    function connectWithCredentials(creds: WindsurfCredentials) {
+      const client = http2.connect(`http://localhost:${creds.port}`);
+      const chunks: string[] = [];
+
+      client.on('error', async (err) => {
         client.close();
+        // Retry with fresh credentials on connection failure (Windsurf may have restarted)
+        if (!retryAttempted && (err as any).code === 'ECONNREFUSED') {
+          retryAttempted = true;
+          console.log('[grpc-client] Legacy connection refused, retrying with fresh credentials...');
+          try {
+            const freshCreds = getCredentials();
+            connectWithCredentials(freshCreds);
+            return;
+          } catch (retryErr) {
+            options.onError?.(retryErr as Error);
+            reject(retryErr);
+            return;
+          }
+        }
         options.onError?.(err);
         reject(new WindsurfError(
-          `Request failed: ${err.message}`,
-          WindsurfErrorCode.STREAM_ERROR,
+          `Connection failed: ${err.message}`,
+          WindsurfErrorCode.CONNECTION_FAILED,
           err
         ));
       });
 
-      req.write(body);
-      req.end();
-    });
+      client.on('connect', () => {
+        const req = client.request({
+          ':method': 'POST',
+          ':path': '/exa.language_server_pb.LanguageServerService/RawGetChatMessage',
+          'content-type': 'application/grpc',
+          'te': 'trailers',
+          'x-codeium-csrf-token': creds.csrfToken,
+        });
 
-    // Timeout after 2 minutes
-    setTimeout(() => {
-      client.close();
-      const fullText = chunks.join('');
-      options.onComplete?.(fullText);
-      resolve(fullText);
-    }, 120000);
+        req.on('data', (chunk: Buffer) => {
+          const text = extractTextFromChunk(chunk);
+          if (text) {
+            chunks.push(text);
+            options.onChunk?.(text);
+          }
+        });
+
+        req.on('trailers', (trailers) => {
+          const status = trailers['grpc-status'];
+          if (status !== '0') {
+            const message = trailers['grpc-message'];
+            const err = new WindsurfError(
+              `gRPC error ${status}: ${message ? decodeURIComponent(message as string) : 'Unknown error'}`,
+              WindsurfErrorCode.STREAM_ERROR
+            );
+            options.onError?.(err);
+            reject(err);
+          }
+        });
+
+        req.on('end', () => {
+          client.close();
+          const fullText = chunks.join('');
+          options.onComplete?.(fullText);
+          resolve(fullText);
+        });
+
+        req.on('error', (err) => {
+          client.close();
+          options.onError?.(err);
+          reject(new WindsurfError(
+            `Request failed: ${err.message}`,
+            WindsurfErrorCode.STREAM_ERROR,
+            err
+          ));
+        });
+
+        req.write(body);
+        req.end();
+      });
+    }
+    
+    connectWithCredentials(credentials);
   });
 }
 
@@ -583,89 +1194,121 @@ export async function* streamChatGenerator(
   credentials: WindsurfCredentials,
   options: Pick<StreamChatOptions, 'model' | 'messages'>
 ): AsyncGenerator<string, void, unknown> {
-  const { csrfToken, port, apiKey, version } = credentials;
+  const { csrfToken: _csrfToken, port: _port, apiKey, version } = credentials;
   const resolved = resolveModel(options.model);
   const modelEnum = resolved.enumValue;
-  const modelName = resolved.modelUid ?? (resolved.variant ? `${resolved.modelId}:${resolved.variant}` : resolved.modelId);
+  const modelUid = resolved.modelUid;
+  const modelName = modelUid ?? (resolved.variant ? `${resolved.modelId}:${resolved.variant}` : resolved.modelId);
+
+  if (shouldUseCascade(modelEnum, modelUid)) {
+    // Use Cascade flow for premium models
+    yield* streamChatCascade(credentials, options, modelEnum, modelUid);
+    return;
+  }
+
+  // Legacy RawGetChatMessage flow
   const body = buildChatRequest(apiKey, version, modelEnum, options.messages, modelName);
 
-  const client = http2.connect(`http://localhost:${port}`);
+  let retryAttempted = false;
 
-  const chunkQueue: string[] = [];
-  let done = false;
-  let error: Error | null = null;
-  let resolveWait: (() => void) | null = null;
+  async function* connectAndStream(creds: WindsurfCredentials): AsyncGenerator<string, void, unknown> {
+    const client = http2.connect(`http://localhost:${creds.port}`);
 
-  client.on('error', (err) => {
-    error = new WindsurfError(
-      `Connection failed: ${err.message}`,
-      WindsurfErrorCode.CONNECTION_FAILED,
-      err
-    );
-    done = true;
-    resolveWait?.();
-  });
+    const chunkQueue: string[] = [];
+    let done = false;
+    let error: Error | null = null;
+    let resolveWait: (() => void) | null = null;
+    let connectionError: Error | null = null;
 
-  const req = client.request({
-    ':method': 'POST',
-    ':path': '/exa.language_server_pb.LanguageServerService/RawGetChatMessage',
-    'content-type': 'application/grpc',
-    'te': 'trailers',
-    'x-codeium-csrf-token': csrfToken,
-  });
-
-  req.on('data', (chunk: Buffer) => {
-    const text = extractTextFromChunk(chunk);
-    if (text) {
-      chunkQueue.push(text);
-      resolveWait?.();
-    }
-  });
-
-  req.on('trailers', (trailers) => {
-    const status = trailers['grpc-status'];
-    if (status !== '0') {
-      const message = trailers['grpc-message'];
+    client.on('error', (err) => {
+      // Check if this is a connection error we should retry
+      if (!retryAttempted && (err as any).code === 'ECONNREFUSED') {
+        connectionError = err;
+        done = true;
+        resolveWait?.();
+        return;
+      }
       error = new WindsurfError(
-        `gRPC error ${status}: ${message ? decodeURIComponent(message as string) : 'Unknown error'}`,
-        WindsurfErrorCode.STREAM_ERROR
+        `Connection failed: ${err.message}`,
+        WindsurfErrorCode.CONNECTION_FAILED,
+        err
       );
+      done = true;
+      resolveWait?.();
+    });
+
+    const req = client.request({
+      ':method': 'POST',
+      ':path': '/exa.language_server_pb.LanguageServerService/RawGetChatMessage',
+      'content-type': 'application/grpc',
+      'te': 'trailers',
+      'x-codeium-csrf-token': creds.csrfToken,
+    });
+
+    req.on('data', (chunk: Buffer) => {
+      const text = extractTextFromChunk(chunk);
+      if (text) {
+        chunkQueue.push(text);
+        resolveWait?.();
+      }
+    });
+
+    req.on('trailers', (trailers) => {
+      const status = trailers['grpc-status'];
+      if (status !== '0') {
+        const message = trailers['grpc-message'];
+        error = new WindsurfError(
+          `gRPC error ${status}: ${message ? decodeURIComponent(message as string) : 'Unknown error'}`,
+          WindsurfErrorCode.STREAM_ERROR
+        );
+      }
+    });
+
+    req.on('end', () => {
+      done = true;
+      client.close();
+      resolveWait?.();
+    });
+
+    req.on('error', (err) => {
+      error = new WindsurfError(
+        `Request failed: ${err.message}`,
+        WindsurfErrorCode.STREAM_ERROR,
+        err
+      );
+      done = true;
+      client.close();
+      resolveWait?.();
+    });
+
+    req.write(body);
+    req.end();
+
+    // Yield chunks as they arrive
+    while (!done || chunkQueue.length > 0) {
+      if (chunkQueue.length > 0) {
+        yield chunkQueue.shift()!;
+      } else if (!done) {
+        await new Promise<void>((resolve) => {
+          resolveWait = resolve;
+        });
+        resolveWait = null;
+      }
     }
-  });
 
-  req.on('end', () => {
-    done = true;
-    client.close();
-    resolveWait?.();
-  });
+    // Check if we had a retryable connection error
+    if (connectionError && !retryAttempted) {
+      retryAttempted = true;
+      console.log('[grpc-client] Generator connection refused, retrying with fresh credentials...');
+      const freshCreds = getCredentials();
+      yield* connectAndStream(freshCreds);
+      return;
+    }
 
-  req.on('error', (err) => {
-    error = new WindsurfError(
-      `Request failed: ${err.message}`,
-      WindsurfErrorCode.STREAM_ERROR,
-      err
-    );
-    done = true;
-    client.close();
-    resolveWait?.();
-  });
-
-  req.write(body);
-  req.end();
-
-  // Yield chunks as they arrive
-  while (!done || chunkQueue.length > 0) {
-    if (chunkQueue.length > 0) {
-      yield chunkQueue.shift()!;
-    } else if (!done) {
-      await new Promise<void>((resolve) => {
-        resolveWait = resolve;
-      });
-      resolveWait = null;
+    if (error) {
+      throw error;
     }
   }
 
-  if (error) {
-    throw error;
-  }
+  yield* connectAndStream(credentials);
 }

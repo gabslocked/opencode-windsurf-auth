@@ -183,18 +183,49 @@ export function getPort(): number {
       // Fall through to offset-based approach
     }
   } else if (process.platform !== 'win32' && pid) {
+    // Try lsof first (may not be installed on all Linux distros)
     try {
       const lsof = execSync(
-        `lsof -p ${pid} -i -P -n 2>/dev/null | grep language | grep LISTEN`, 
+        `lsof -p ${pid} -i -P -n 2>/dev/null | grep LISTEN`,
         { encoding: 'utf8', timeout: 15000 }
       );
       
-      // Extract all listening ports
       const portMatches = lsof.matchAll(/:(\d+)\s+\(LISTEN\)/g);
       const ports = Array.from(portMatches).map(m => parseInt(m[1], 10));
       
       if (ports.length > 0) {
-        // just return the first listening port
+        if (extPort) {
+          const candidatePorts = ports.filter(p => p > extPort).sort((a, b) => a - b);
+          if (candidatePorts.length > 0) {
+            return candidatePorts[0];
+          }
+        }
+        return ports[0];
+      }
+    } catch {
+      // lsof not available, fall through to ss
+    }
+
+    // Fallback: use ss (socket statistics) — always available on Linux
+    try {
+      const ss = execSync(
+        `ss -tlnp 2>/dev/null | grep "pid=${pid}"`,
+        { encoding: 'utf8', timeout: 15000 }
+      );
+      
+      // ss output format: LISTEN 0 4096 127.0.0.1:PORT 0.0.0.0:*
+      // ss lists sockets in fd order; the main gRPC port is typically the first (lowest fd)
+      const ssPortMatches = ss.matchAll(/(?:127\.0\.0\.1|\[::\]|\*):([0-9]+)/g);
+      const ports = Array.from(ssPortMatches).map(m => parseInt(m[1], 10)).filter(p => p > 0);
+      
+      if (ports.length > 0) {
+        // Filter to ports above extension_server_port, but preserve ss output order (fd order)
+        if (extPort) {
+          const candidatePorts = ports.filter(p => p > extPort);
+          if (candidatePorts.length > 0) {
+            return candidatePorts[0];
+          }
+        }
         return ports[0];
       }
     } catch {

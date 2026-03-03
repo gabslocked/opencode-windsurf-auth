@@ -1,191 +1,232 @@
-# opencode-windsurf-auth
+# 🌊 OpenCode Windsurf Auth Plugin
 
-[![npm version](https://img.shields.io/npm/v/opencode-windsurf-auth.svg)](https://www.npmjs.com/package/opencode-windsurf-auth)
-[![npm beta](https://img.shields.io/npm/v/opencode-windsurf-auth/beta.svg?label=beta)](https://www.npmjs.com/package/opencode-windsurf-auth)
-[![npm downloads](https://img.shields.io/npm/dw/opencode-windsurf-codeium.svg)](https://www.npmjs.com/package/opencode-windsurf-auth)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Bun](https://img.shields.io/badge/Bun-1.0+-black?logo=bun)](https://bun.sh)
+[![Windsurf](https://img.shields.io/badge/Windsurf-Compatible-blue)](https://codeium.com/windsurf)
+[![OpenCode](https://img.shields.io/badge/OpenCode-Plugin-green)](https://github.com/opencode-ai/opencode)
 
-Opencode plugin for Windsurf/Codeium authentication - use Windsurf models in Opencode.
+> **Unlock 90+ AI models from Windsurf/Codeium in OpenCode** — Claude 4.5 Sonnet, GPT-5.2, Gemini 3.0, SWE-1.5, and many more!
 
-## Features
+This plugin exposes Windsurf's local language server as an **OpenAI-compatible REST API**, enabling OpenCode to use Windsurf's premium models without additional API keys or cloud authentication.
 
-- OpenAI-compatible `/v1/chat/completions` interface with streaming SSE
-- Automatic credential discovery (CSRF token, port, API key)
-- Transparent REST↔gRPC translation over HTTP/2
-- Zero extra auth prompts when Windsurf is running
-- Opencode tool-calling compatible: tools are planned via Windsurf inference but executed by Opencode (MCP/tool registry remains authoritative)
+## ✨ Features
 
-## Overview
+- 🚀 **90+ Models**: Claude 4.5, GPT-5.2, Gemini 3.0, SWE-1.5, Kimi, Grok, and more
+- 🔌 **OpenAI-Compatible**: Drop-in replacement for OpenAI API (`/v1/chat/completions`)
+- 🔄 **Auto-Discovery**: Automatically finds Windsurf credentials from running process
+- 🛡️ **Auto-Retry**: Handles Windsurf restarts gracefully with automatic reconnection
+- 📡 **Streaming**: Full SSE streaming support for real-time responses
+- 🎯 **Tool Calling**: Prompt-based tool calling support
 
-This plugin enables Opencode users to access Windsurf/Codeium models by leveraging their existing Windsurf installation. It communicates directly with the **local Windsurf language server** via gRPC—no network traffic capture or OAuth flows required.
+## 📋 Requirements
 
-## Prerequisites
+- [Bun](https://bun.sh) runtime (Node.js not supported)
+- [Windsurf](https://codeium.com/windsurf) IDE running
+- [OpenCode](https://github.com/opencode-ai/opencode) CLI
 
-1. **Windsurf IDE installed** - Download from [windsurf.com](https://windsurf.com)
-2. **Windsurf running** - The plugin communicates with the local language server
-3. **Logged into Windsurf** - Provides API key in `~/.codeium/config.json`
-4. **Active Windsurf subscription** - Model access depends on your plan
+## 🚀 Quick Start
 
-## Installation
+### One-Line Installation
 
 ```bash
-bun add opencode-windsurf-auth@beta
+curl -fsSL https://raw.githubusercontent.com/gabslocked/opencode-windsurf-auth/main/install.sh | bash
 ```
 
-## Opencode Configuration
+### Manual Installation
 
-Add the following to your Opencode config (typically `~/.config/opencode/config.json`). The plugin starts a local proxy server on port 42100 (falls back to a random free port and updates `chat.params` automatically). The full model list with variants is in `opencode_config_example.json`; thinking vs non-thinking are separate models, while variants are only for performance tiers (low/high/xhigh/etc.).
+1. **Clone the repository:**
+```bash
+git clone https://github.com/gabslocked/opencode-windsurf-auth.git
+cd opencode-windsurf-auth
+```
 
+2. **Install dependencies:**
+```bash
+bun install
+```
+
+3. **Build the plugin:**
+```bash
+bun run build
+```
+
+4. **Deploy to OpenCode:**
+```bash
+mkdir -p ~/.config/opencode/node_modules/opencode-windsurf-auth
+cp -r dist/* ~/.config/opencode/node_modules/opencode-windsurf-auth/
+```
+
+5. **Configure OpenCode** (~/.config/opencode/opencode.json):
 ```json
 {
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-windsurf-auth@beta"],
-  "provider": {
+  "providers": {
     "windsurf": {
-      "npm": "@ai-sdk/openai-compatible",
-      "options": {
-        "baseURL": "http://127.0.0.1:42100/v1"
-      },
-      "models": {
-        "claude-4.5-opus-thinking": {
-          "name": "Claude 4.5 Opus Thinking (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
-          }
-        },
-        "gpt-5.1-codex-max": {
-          "name": "GPT 5.1 Codex Max (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
-          },
-          "variants": {
-            "low": {},
-            "medium": {},
-            "high": {}
-          }
-        },
-        "gemini-3.0-pro": {
-          "name": "Gemini 3.0 Pro (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
-          },
-          "variants": {
-            "minimal": {},
-            "low": {},
-            "medium": {},
-            "high": {}
-          }
-        },
-        "minimax-m2.1": {
-          "name": "Minimax M2.1 (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
-          }
-        },
-        "glm-4.7": {
-          "name": "GLM 4.7 (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
-          }
-        },
-        "glm-4.7-fast": {
-          "name": "GLM 4.7 Fast (Windsurf)",
-          "limit": {
-            "context": 200000,
-            "output": 8192
-          }
-        }
-      }
+      "type": "proxy",
+      "proxyUrl": "http://127.0.0.1:42100"
     }
   }
 }
 ```
 
-After saving the config:
+6. **Restart OpenCode** and start using Windsurf models!
+
+## 🧪 Testing
+
+Run the built-in tests to verify everything works:
 
 ```bash
-opencode models list                                            # confirm models appear under windsurf/
-opencode chat --model=windsurf/claude-4.5-opus "Hello"          # quick smoke test
+bun test
 ```
 
-Keep Windsurf running and signed in—credentials are fetched live from the IDE process.
+Test specific models:
+```bash
+# Test Claude 4.5 Sonnet
+curl -X POST http://127.0.0.1:42100/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-4.5-sonnet",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
 
-## Project Layout
+# Test SWE-1.5
+curl -X POST http://127.0.0.1:42100/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "swe-1.5",
+    "messages": [{"role": "user", "content": "Review this code"}]
+  }'
+```
+
+## 🎯 Supported Models
+
+| Category | Models |
+|----------|--------|
+| **Claude** | claude-4.5-sonnet, claude-4.5-opus, claude-4.6-opus, claude-3.7-sonnet, claude-3.5-sonnet |
+| **GPT** | gpt-5.2, gpt-5.2-codex, gpt-5, gpt-4.5, gpt-4o, gpt-4o-mini |
+| **Gemini** | gemini-3.0-pro, gemini-3.0-flash, gemini-2.5-pro, gemini-2.5-flash |
+| **SWE** | swe-1.5, swe-1.6 |
+| **O-Series** | o3, o3-pro, o4-mini |
+| **Other** | kimi-k2, kimi-k2.5, grok-3, grok-code-fast, minimax-m2.1, glm-5 |
+
+### Model Variants
+
+Many models support performance variants:
+
+```bash
+# GPT-5.2 with different reasoning budgets
+gpt-5.2:low
+gpt-5.2:medium        # default
+gpt-5.2:high
+gpt-5.2:xhigh
+
+# Claude with thinking mode
+claude-4.5-sonnet:thinking
+claude-4.5-opus:thinking
+
+# Gemini with reasoning budgets
+gemini-3.0-flash:minimal
+gemini-3.0-flash:low
+gemini-3.0-flash:medium
+gemini-3.0-flash:high
+```
+
+## 🔧 How It Works
 
 ```
-src/
-├── plugin.ts              # Fetch interceptor that routes to Windsurf
-├── constants.ts           # gRPC service metadata
-└── plugin/
-    ├── auth.ts            # Credential discovery
-    ├── grpc-client.ts     # Streaming chat bridge
-    ├── models.ts          # Model lookup tables
-    └── types.ts           # Shared enums/types
+┌─────────────┐     OpenAI API      ┌──────────────┐
+│   OpenCode  │ ◄──────────────────► │  Plugin      │
+│   CLI       │    localhost:42100   │  (Bun HTTP)  │
+└─────────────┘                      └──────┬───────┘
+                                            │
+                                            │ gRPC
+                                            │
+┌─────────────┐                      ┌──────▼───────┐
+│  Windsurf   │ ◄──────────────────► │  Language    │
+│  IDE        │   local process      │  Server      │
+└─────────────┘                      └──────────────┘
 ```
 
-### How It Works
+1. **Discovery**: Plugin scans for running Windsurf process to extract CSRF token and gRPC port
+2. **Translation**: Converts OpenAI REST API calls to Windsurf gRPC messages
+3. **Streaming**: Returns SSE chunks as they arrive from the language server
+4. **Auto-Recovery**: Retries with fresh credentials if Windsurf restarts
 
-1. **Credential Discovery**: Extracts CSRF token and port from the running `language_server_macos` process
-2. **API Key**: Reads from `~/.codeium/config.json`
-3. **gRPC Communication**: Sends requests to `localhost:{port}` using HTTP/2 gRPC protocol
-4. **Response Transformation**: Converts gRPC responses to OpenAI-compatible SSE format (assistant/tool turns are not replayed back to Windsurf)
-5. **Model Naming**: Sends both model enum and `chat_model_name` for fidelity with Windsurf’s expectations
-6. **Tool Planning**: When `tools` are provided, we build a tool-calling prompt (with system messages) and ask Windsurf to produce `tool_calls`/final text. Tool execution and MCP tool registry stay on OpenCode’s side.
+## 📁 Project Structure
 
-### Supported Models (canonical names)
+```
+opencode-windsurf-auth/
+├── src/
+│   ├── plugin.ts              # Main HTTP server & OpenAI API endpoints
+│   ├── index.ts               # Package exports
+│   └── plugin/
+│       ├── auth.ts            # Credential discovery (CSRF, port, API key)
+│       ├── grpc-client.ts     # gRPC encoding/decoding + Cascade flow
+│       ├── models.ts          # Model name → enum/UID mappings
+│       ├── types.ts           # TypeScript types
+│       └── discovery.ts       # Dynamic protobuf field discovery
+├── dist/                      # Compiled output
+├── tests/                     # Unit tests
+├── install.sh                 # One-line installer
+└── README.md                  # This file
+```
 
-**Claude**: `claude-3-opus`, `claude-3-sonnet`, `claude-3-haiku`, `claude-3.5-sonnet`, `claude-3.5-haiku`, `claude-3.7-sonnet`, `claude-3.7-sonnet-thinking`, `claude-4-opus`, `claude-4-opus-thinking`, `claude-4-sonnet`, `claude-4-sonnet-thinking`, `claude-4.1-opus`, `claude-4.1-opus-thinking`, `claude-4.5-sonnet`, `claude-4.5-sonnet-thinking`, `claude-4.5-sonnet-1m`, `claude-4.5-sonnet-thinking-1m`, `claude-4.5-opus`, `claude-4.5-opus-thinking`, `claude-4.6-opus`, `claude-4.6-opus-thinking`, `claude-4.6-sonnet`, `claude-4.6-sonnet-thinking`, `claude-code`.
-
-**OpenAI GPT**: `gpt-4`, `gpt-4-turbo`, `gpt-4o`, `gpt-4o-mini`, `gpt-4.1`, `gpt-4.1-mini`, `gpt-4.1-nano`, `gpt-5`, `gpt-5-nano`, `gpt-5-codex`, `gpt-5.1-codex-mini`, `gpt-5.1-codex`, `gpt-5.1-codex-max`, `gpt-5.2` (variants low/medium/high/xhigh + priority tiers), `gpt-5.2-codex` (variants low/medium/high/xhigh + priority tiers), `gpt-5.3-codex` (variants low/medium/high/xhigh + priority tiers). Non-thinking vs thinking are separate model IDs, not variants.
-
-**OpenAI O-series**: `o3`, `o3-mini`, `o3-low`, `o3-high`, `o3-pro`, `o3-pro-low`, `o3-pro-high`, `o4-mini`, `o4-mini-low`, `o4-mini-high`.
-
-**Gemini**: `gemini-2.0-flash`, `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-thinking`, `gemini-2.5-flash-lite`, `gemini-3.0-pro` (variants: `minimal`, `low`, `medium`, `high`), `gemini-3.0-flash` (variants: `minimal`, `low`, `medium`, `high`), `gemini-3.1-pro` (variants: `low`, `high`). Thinking versions of Gemini 2.5 are separate models.
-
-**DeepSeek**: `deepseek-v3`, `deepseek-v3-2`, `deepseek-r1`, `deepseek-r1-fast`, `deepseek-r1-slow`.
-
-**Llama**: `llama-3.1-8b`, `llama-3.1-70b`, `llama-3.1-405b`, `llama-3.3-70b`, `llama-3.3-70b-r1`.
-
-**Qwen**: `qwen-2.5-7b`, `qwen-2.5-32b`, `qwen-2.5-72b`, `qwen-2.5-32b-r1`, `qwen-3-235b`, `qwen-3-coder-480b`, `qwen-3-coder-480b-fast`.
-
-**Grok (xAI)**: `grok-2`, `grok-3`, `grok-3-mini`, `grok-code-fast`.
-
-**Specialty & Proprietary**: `mistral-7b`, `kimi-k2`, `kimi-k2-thinking`, `kimi-k2.5`, `glm-4.5`, `glm-4.5-fast`, `glm-4.6`, `glm-4.6-fast`, `glm-4.7`, `glm-4.7-fast`, `glm-5`, `minimax-m2`, `minimax-m2.1`, `minimax-m2.5`, `swe-1.5`, `swe-1.5-thinking`, `swe-1.5-slow`, `swe-1.6`, `swe-1.6-fast`, `codex-mini` (variants low/high).
-
-Aliases (e.g., `gpt-5.2-low-priority`) are also accepted. Variants live under `provider.windsurf.models[model].variants`; thinking/non-thinking are distinct models.
-
-## Development
+## 🛠️ Development
 
 ```bash
 # Install dependencies
 bun install
-
-# Build
-bun run build
 
 # Type check
 bun run typecheck
 
 # Run tests
 bun test
+
+# Build for production
+bun run build
+
+# Watch mode for development
+bun run dev
 ```
 
-## Known Limitations
+## 🐛 Troubleshooting
 
-- **Windsurf must be running** - The plugin communicates with the local language server
-- **macOS focus** - Linux/Windows paths need verification
+### "Connection failed: connect ECONNREFUSED"
+- Make sure Windsurf is running
+- Plugin will auto-retry with fresh credentials
 
-## Further Reading
+### "StartCascade returned empty cascade_id"
+- Windsurf may have restarted - plugin will auto-recover
+- Check if your Windsurf subscription is active
 
-- [docs/WINDSURF_API_SPEC.md](https://github.com/rsvedant/opencode-windsurf-auth/blob/master/docs/WINDSURF_API_SPEC.md) – gRPC endpoints & protobuf notes
-- [docs/REVERSE_ENGINEERING.md](https://github.com/rsvedant/opencode-windsurf-auth/blob/master/docs/REVERSE_ENGINEERING.md) – credential discovery + tooling
-- [opencode-antigravity-auth](https://github.com/NoeFabris/opencode-antigravity-auth) – related project
+### "gRPC error 12: unimplemented"
+- Some models may not be available in your region/subscription
 
-## License
+### Model not working?
+- Check ~/.config/opencode/opencode.json has correct proxy URL
+- Verify Windsurf is running: pgrep -f language_server
+- Check plugin logs in OpenCode output
 
-MIT
+## 🔒 Security
+
+- Plugin only connects to **localhost** (127.0.0.1)
+- Uses Windsurf's existing authentication (no additional API keys)
+- Credentials are read from Windsurf's process, never stored
+- All communication stays on your machine
+
+## 📄 License
+
+MIT License — see LICENSE file
+
+## 🙏 Credits
+
+- Original project by [rsvedant/opencode-windsurf-auth](https://github.com/rsvedant/opencode-windsurf-auth)
+- Fork maintained by [gabslocked](https://github.com/gabslocked)
+
+- Built for [OpenCode](https://github.com/opencode-ai/opencode)
+- Powered by [Windsurf](https://codeium.com/windsurf) / Codeium
+- Uses [Bun](https://bun.sh) runtime
+
+---
+
+**Enjoy coding with premium AI models!** 🚀

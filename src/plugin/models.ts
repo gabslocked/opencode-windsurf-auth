@@ -49,8 +49,9 @@ const VARIANT_CATALOG: Record<string, ModelCatalogEntry> = {
   'claude-4.5-sonnet': {
     id: 'claude-4.5-sonnet',
     defaultEnum: ModelEnum.CLAUDE_4_5_SONNET,
+    defaultModelUid: 'MODEL_PRIVATE_2',
     variants: {
-      thinking: { enumValue: ModelEnum.CLAUDE_4_5_SONNET_THINKING, description: 'Thinking mode' },
+      thinking: { enumValue: ModelEnum.CLAUDE_4_5_SONNET_THINKING, modelUid: 'MODEL_PRIVATE_3', description: 'Thinking mode' },
       '1m': { enumValue: ModelEnum.CLAUDE_4_5_SONNET_1M, description: '1M context' },
       'thinking-1m': { enumValue: ModelEnum.CLAUDE_4_5_SONNET_THINKING_1M, description: 'Thinking + 1M context' },
     },
@@ -58,8 +59,9 @@ const VARIANT_CATALOG: Record<string, ModelCatalogEntry> = {
   'claude-4.5-opus': {
     id: 'claude-4.5-opus',
     defaultEnum: ModelEnum.CLAUDE_4_5_OPUS,
+    defaultModelUid: 'MODEL_CLAUDE_4_5_OPUS',
     variants: {
-      thinking: { enumValue: ModelEnum.CLAUDE_4_5_OPUS_THINKING, description: 'Thinking mode' },
+      thinking: { enumValue: ModelEnum.CLAUDE_4_5_OPUS_THINKING, modelUid: 'MODEL_CLAUDE_4_5_OPUS_THINKING', description: 'Thinking mode' },
     },
   },
   'claude-4.1-opus': {
@@ -99,11 +101,12 @@ const VARIANT_CATALOG: Record<string, ModelCatalogEntry> = {
   'gemini-3.0-pro': {
     id: 'gemini-3.0-pro',
     defaultEnum: ModelEnum.GEMINI_3_0_PRO_MEDIUM,
+    defaultModelUid: 'MODEL_GOOGLE_GEMINI_3_0_PRO_LOW',
     variants: {
       minimal: { enumValue: ModelEnum.GEMINI_3_0_PRO_MINIMAL, description: 'Cheaper, least reasoning' },
-      low: { enumValue: ModelEnum.GEMINI_3_0_PRO_LOW, description: 'Lower cost / speed' },
+      low: { enumValue: ModelEnum.GEMINI_3_0_PRO_LOW, modelUid: 'MODEL_GOOGLE_GEMINI_3_0_PRO_LOW', description: 'Lower cost / speed' },
       medium: { enumValue: ModelEnum.GEMINI_3_0_PRO_MEDIUM, description: 'Balanced (default)' },
-      high: { enumValue: ModelEnum.GEMINI_3_0_PRO_HIGH, description: 'Higher reasoning budget' },
+      high: { enumValue: ModelEnum.GEMINI_3_0_PRO_HIGH, modelUid: 'MODEL_GOOGLE_GEMINI_3_0_PRO_HIGH', description: 'Higher reasoning budget' },
     },
     aliases: ['gemini-3-0-pro'],
   },
@@ -111,11 +114,12 @@ const VARIANT_CATALOG: Record<string, ModelCatalogEntry> = {
   'gemini-3.0-flash': {
     id: 'gemini-3.0-flash',
     defaultEnum: ModelEnum.GEMINI_3_0_FLASH_MEDIUM,
+    defaultModelUid: 'MODEL_GOOGLE_GEMINI_3_0_FLASH_MEDIUM',
     variants: {
-      minimal: { enumValue: ModelEnum.GEMINI_3_0_FLASH_MINIMAL, description: 'Cheapest, lowest latency' },
-      low: { enumValue: ModelEnum.GEMINI_3_0_FLASH_LOW, description: 'Low thinking budget' },
-      medium: { enumValue: ModelEnum.GEMINI_3_0_FLASH_MEDIUM, description: 'Balanced (default)' },
-      high: { enumValue: ModelEnum.GEMINI_3_0_FLASH_HIGH, description: 'Higher reasoning budget' },
+      minimal: { enumValue: ModelEnum.GEMINI_3_0_FLASH_MINIMAL, modelUid: 'MODEL_GOOGLE_GEMINI_3_0_FLASH_MINIMAL', description: 'Cheapest, lowest latency' },
+      low: { enumValue: ModelEnum.GEMINI_3_0_FLASH_LOW, modelUid: 'MODEL_GOOGLE_GEMINI_3_0_FLASH_LOW', description: 'Low thinking budget' },
+      medium: { enumValue: ModelEnum.GEMINI_3_0_FLASH_MEDIUM, modelUid: 'MODEL_GOOGLE_GEMINI_3_0_FLASH_MEDIUM', description: 'Balanced (default)' },
+      high: { enumValue: ModelEnum.GEMINI_3_0_FLASH_HIGH, modelUid: 'MODEL_GOOGLE_GEMINI_3_0_FLASH_HIGH', description: 'Higher reasoning budget' },
     },
     aliases: ['gemini-3-0-flash'],
   },
@@ -123,15 +127,16 @@ const VARIANT_CATALOG: Record<string, ModelCatalogEntry> = {
   'gpt-5.2': {
     id: 'gpt-5.2',
     defaultEnum: ModelEnum.GPT_5_2_MEDIUM,
+    defaultModelUid: 'MODEL_GPT_5_2_MEDIUM',
     variants: {
       none: { enumValue: ModelEnum.GPT_5_2_NONE, description: 'No reasoning' },
-      low: { enumValue: ModelEnum.GPT_5_2_LOW, description: 'Lower cost' },
-      medium: { enumValue: ModelEnum.GPT_5_2_MEDIUM, description: 'Balanced (default)' },
+      low: { enumValue: ModelEnum.GPT_5_2_LOW, modelUid: 'MODEL_GPT_5_2_LOW', description: 'Lower cost' },
+      medium: { enumValue: ModelEnum.GPT_5_2_MEDIUM, modelUid: 'MODEL_GPT_5_2_MEDIUM', description: 'Balanced (default)' },
       high: { enumValue: ModelEnum.GPT_5_2_HIGH, description: 'Higher capability' },
       xhigh: { enumValue: ModelEnum.GPT_5_2_XHIGH, description: 'Maximum capability' },
       fast: { enumValue: ModelEnum.GPT_5_2_NONE_PRIORITY, description: 'Fast / priority routing (none)' },
-      'low-fast': { enumValue: ModelEnum.GPT_5_2_LOW_PRIORITY, description: 'Low + priority routing' },
-      'medium-fast': { enumValue: ModelEnum.GPT_5_2_MEDIUM_PRIORITY, description: 'Medium + priority routing' },
+      'low-fast': { enumValue: ModelEnum.GPT_5_2_LOW_PRIORITY, modelUid: 'MODEL_GPT_5_2_LOW_PRIORITY', description: 'Low + priority routing' },
+      'medium-fast': { enumValue: ModelEnum.GPT_5_2_MEDIUM_PRIORITY, modelUid: 'MODEL_GPT_5_2_MEDIUM_PRIORITY', description: 'Medium + priority routing' },
       'high-fast': { enumValue: ModelEnum.GPT_5_2_HIGH_PRIORITY, description: 'High + priority routing' },
       'xhigh-fast': { enumValue: ModelEnum.GPT_5_2_XHIGH_PRIORITY, description: 'XHigh + priority routing' },
     },
@@ -212,8 +217,8 @@ const VARIANT_CATALOG: Record<string, ModelCatalogEntry> = {
     variants: {
       low: { enumValue: ModelEnum.GPT_5_2_CODEX_LOW },
       medium: { enumValue: ModelEnum.GPT_5_2_CODEX_MEDIUM },
-      high: { enumValue: ModelEnum.GPT_5_2_CODEX_HIGH },
-      xhigh: { enumValue: ModelEnum.GPT_5_2_CODEX_XHIGH },
+      high: { enumValue: ModelEnum.GPT_5_2_CODEX_HIGH, modelUid: 'MODEL_GPT_5_2_CODEX_HIGH' },
+      xhigh: { enumValue: ModelEnum.GPT_5_2_CODEX_XHIGH, modelUid: 'MODEL_GPT_5_2_CODEX_XHIGH' },
       'low-fast': { enumValue: ModelEnum.GPT_5_2_CODEX_LOW_PRIORITY },
       'medium-fast': { enumValue: ModelEnum.GPT_5_2_CODEX_MEDIUM_PRIORITY },
       'high-fast': { enumValue: ModelEnum.GPT_5_2_CODEX_HIGH_PRIORITY },
@@ -237,10 +242,11 @@ const VARIANT_CATALOG: Record<string, ModelCatalogEntry> = {
   'swe-1.5': {
     id: 'swe-1.5',
     defaultEnum: ModelEnum.SWE_1_5,
+    defaultModelUid: 'MODEL_SWE_1_5',
     variants: {
       thinking: { enumValue: ModelEnum.SWE_1_5_THINKING },
-      slow: { enumValue: ModelEnum.SWE_1_5_SLOW, description: 'Full intelligence, lower throughput' },
-      fast: { enumValue: ModelEnum.SWE_1_5, description: 'Regular throughput (default)' },
+      slow: { enumValue: ModelEnum.SWE_1_5_SLOW, modelUid: 'MODEL_SWE_1_5_SLOW', description: 'Full intelligence, lower throughput' },
+      fast: { enumValue: ModelEnum.SWE_1_5, modelUid: 'MODEL_SWE_1_5', description: 'Regular throughput (default)' },
     },
     aliases: ['swe-1-5'],
   },
@@ -261,10 +267,6 @@ const VARIANT_CATALOG: Record<string, ModelCatalogEntry> = {
     defaultModelUid: 'claude-opus-4-6',
     variants: {
       thinking: { modelUid: 'claude-opus-4-6-thinking', description: 'Thinking mode' },
-      '1m': { modelUid: 'claude-opus-4-6-1m', description: '1M context' },
-      'thinking-1m': { modelUid: 'claude-opus-4-6-thinking-1m', description: 'Thinking + 1M context' },
-      fast: { modelUid: 'claude-opus-4-6-fast', description: 'Fast / priority routing' },
-      'thinking-fast': { modelUid: 'claude-opus-4-6-thinking-fast', description: 'Thinking + fast' },
     },
     aliases: ['claude-4-6-opus'],
   },
@@ -327,6 +329,38 @@ const VARIANT_CATALOG: Record<string, ModelCatalogEntry> = {
     id: 'minimax-m2.5',
     defaultModelUid: 'minimax-m2-5',
     aliases: ['minimax-m2-5'],
+  },
+
+  // Kimi K2 (enum + string-UID)
+  'kimi-k2': {
+    id: 'kimi-k2',
+    defaultEnum: ModelEnum.KIMI_K2,
+    defaultModelUid: 'MODEL_KIMI_K2',
+    variants: {
+      thinking: { enumValue: ModelEnum.KIMI_K2_THINKING, description: 'Thinking mode' },
+    },
+  },
+
+  // Claude 4.5 Haiku (string-UID routed)
+  'claude-4.5-haiku': {
+    id: 'claude-4.5-haiku',
+    defaultModelUid: 'MODEL_PRIVATE_11',
+    aliases: ['claude-4-5-haiku'],
+  },
+
+  // Minimax M2.1 (enum + string-UID)
+  'minimax-m2.1': {
+    id: 'minimax-m2.1',
+    defaultEnum: ModelEnum.MINIMAX_M2_1,
+    defaultModelUid: 'MODEL_MINIMAX_M2_1',
+    aliases: ['minimax-m2-1'],
+  },
+
+  // Grok Code Fast (enum + string-UID)
+  'grok-code-fast': {
+    id: 'grok-code-fast',
+    defaultEnum: ModelEnum.GROK_CODE_FAST,
+    defaultModelUid: 'MODEL_PRIVATE_4',
   },
 };
 
