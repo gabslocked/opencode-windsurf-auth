@@ -2,16 +2,16 @@
 /**
  * Node.js gRPC wrapper for Bun HTTP/2 compatibility
  * 
- * Usage: node grpc-wrapper.js <port> <csrf> <path> <base64_body>
+ * Usage: node grpc-wrapper.mjs <port> <csrf> <path> [base64_body]
  * Returns: base64_response on stdout, exit code 0 on success
  */
 
-const http2 = require('http2');
+import http2 from 'http2';
 
 const [,, port, csrfToken, path, base64Body] = process.argv;
 
 if (!port || !csrfToken || !path) {
-  console.error('Usage: node grpc-wrapper.js <port> <csrf> <path> [base64_body]');
+  console.error('Usage: node grpc-wrapper.mjs <port> <csrf> <path> [base64_body]');
   process.exit(1);
 }
 
@@ -59,7 +59,7 @@ client.on('connect', () => {
     }
     
     const full = Buffer.concat(chunks);
-    // Strip gRPC frame header if present
+    // Strip gRPC frame header (5 bytes) if present
     if (full.length >= 5 && full[0] === 0) {
       const msgLen = full.readUInt32BE(1);
       if (full.length >= 5 + msgLen) {
