@@ -13,6 +13,8 @@ import * as http2 from 'http2';
 import * as crypto from 'crypto';
 import { spawn } from 'child_process';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { ChatMessageSource } from './types.js';
 import { resolveModel } from './models.js';
@@ -26,8 +28,6 @@ import { getMetadataFields } from './discovery.js';
 const IS_BUN = typeof (process as any).isBun !== 'undefined' || 
                (process.versions as any).bun !== undefined;
 
-// ============================================================================
-// Types
 // ============================================================================
 // Types
 // ============================================================================
@@ -914,45 +914,66 @@ function grpcUnaryCall(
 function grpcUnaryCallNode(
   port: number,
   csrfToken: string,
-  path: string,
+  grpcPath: string,
   body: Buffer,
   retryCount: number = 0
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const wrapperPath = getNodeWrapperPath();
-    const base64Body = body.length > 0 ? body.toString('base64') : '';
-    
+
+    // Write body to a temp file to avoid ARG_MAX limits (E2BIG)
+    const tmpFile = path.join(os.tmpdir(), `grpc-body-${crypto.randomUUID()}.bin`);
+    try {
+      fs.writeFileSync(tmpFile, body);
+    } catch (writeErr) {
+      reject(new WindsurfError(
+        `Failed to write temp file: ${writeErr}`,
+        WindsurfErrorCode.CONNECTION_FAILED
+      ));
+      return;
+    }
+
     const args = [
       wrapperPath,
       String(port),
       csrfToken,
-      path,
-      base64Body
-    ].filter(Boolean);
-    
+      grpcPath,
+      tmpFile,
+    ];
+
     const child = spawn('node', args, {
       stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 30000,
     });
-    
+
     let stdout = '';
     let stderr = '';
-    
+
     child.stdout?.on('data', (data) => {
       stdout += data.toString();
     });
-    
+
     child.stderr?.on('data', (data) => {
       stderr += data.toString();
     });
-    
+
+    // Timeout: kill child after 30s
+    const timer = setTimeout(() => {
+      try { child.kill(); } catch { /* ignore */ }
+      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+      reject(new WindsurfError('gRPC call timed out', WindsurfErrorCode.STREAM_ERROR));
+    }, 30000);
+
     child.on('close', async (code) => {
+      clearTimeout(timer);
+      // Cleanup temp file (wrapper already deletes it, but just in case)
+      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+
       // Retry on connection failure
       if (code !== 0 && retryCount === 0 && stderr.includes('ECONNREFUSED')) {
         try {
           console.log('[grpc-client] Connection refused, retrying with fresh credentials...');
           const freshCreds = getCredentials();
-          const result = await grpcUnaryCallNode(freshCreds.port, freshCreds.csrfToken, path, body, retryCount + 1);
+          const result = await grpcUnaryCallNode(freshCreds.port, freshCreds.csrfToken, grpcPath, body, retryCount + 1);
           resolve(result);
           return;
         } catch (retryErr) {
@@ -960,7 +981,7 @@ function grpcUnaryCallNode(
           return;
         }
       }
-      
+
       if (code !== 0) {
         let errorData;
         try {
@@ -974,7 +995,7 @@ function grpcUnaryCallNode(
         ));
         return;
       }
-      
+
       // Decode base64 response
       try {
         const response = Buffer.from(stdout.trim(), 'base64');
@@ -986,8 +1007,10 @@ function grpcUnaryCallNode(
         ));
       }
     });
-    
+
     child.on('error', (err) => {
+      clearTimeout(timer);
+      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
       reject(new WindsurfError(
         `Failed to spawn Node.js: ${err.message}. Is Node.js installed?`,
         WindsurfErrorCode.CONNECTION_FAILED
