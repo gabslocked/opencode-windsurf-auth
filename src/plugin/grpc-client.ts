@@ -1030,6 +1030,115 @@ function getNodeWrapperPath(): string {
   return path.resolve(currentDir, '..', '..', '..', 'grpc-wrapper.mjs');
 }
 
+/**
+ * Make a streaming gRPC call using Node.js wrapper (for Bun HTTP/2 compatibility)
+ * Yields raw Buffer chunks as they arrive from the server.
+ */
+async function* grpcStreamCallNode(
+  port: number,
+  csrfToken: string,
+  grpcPath: string,
+  body: Buffer,
+  retryCount: number = 0
+): AsyncGenerator<Buffer, void, unknown> {
+  const wrapperPath = getNodeWrapperPath();
+
+  // Write body to a temp file to avoid ARG_MAX limits (E2BIG)
+  const tmpFile = path.join(os.tmpdir(), `grpc-body-${crypto.randomUUID()}.bin`);
+  try {
+    fs.writeFileSync(tmpFile, body);
+  } catch (writeErr) {
+    throw new WindsurfError(
+      `Failed to write temp file: ${writeErr}`,
+      WindsurfErrorCode.CONNECTION_FAILED
+    );
+  }
+
+  const args = [
+    wrapperPath,
+    String(port),
+    csrfToken,
+    grpcPath,
+    tmpFile,
+    '--stream',
+  ];
+
+  const child = spawn('node', args, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let stderrBuf = '';
+  child.stderr?.on('data', (d: Buffer) => { stderrBuf += d.toString(); });
+
+  // Read lines from stdout as they arrive
+  const lineQueue: string[] = [];
+  let done = false;
+  let childError: Error | null = null;
+  let resolveWait: (() => void) | null = null;
+
+  let lineBuf = '';
+  child.stdout?.on('data', (data: Buffer) => {
+    lineBuf += data.toString();
+    const parts = lineBuf.split('\n');
+    lineBuf = parts.pop()!; // last part may be incomplete
+    for (const line of parts) {
+      if (line) lineQueue.push(line);
+      resolveWait?.();
+    }
+  });
+
+  child.on('close', (code) => {
+    try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+    if (code !== 0 && !childError) {
+      childError = new WindsurfError(
+        `gRPC stream process exited with code ${code}: ${stderrBuf || 'unknown error'}`,
+        WindsurfErrorCode.CONNECTION_FAILED
+      );
+    }
+    done = true;
+    resolveWait?.();
+  });
+
+  child.on('error', (err) => {
+    try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+    childError = new WindsurfError(
+      `Failed to spawn Node.js: ${err.message}. Is Node.js installed?`,
+      WindsurfErrorCode.CONNECTION_FAILED
+    );
+    done = true;
+    resolveWait?.();
+  });
+
+  // Yield chunks as they arrive from the child process
+  while (!done || lineQueue.length > 0) {
+    if (lineQueue.length > 0) {
+      const line = lineQueue.shift()!;
+      if (line.startsWith('CHUNK:')) {
+        yield Buffer.from(line.slice(6), 'base64');
+      } else if (line.startsWith('ERROR:')) {
+        let errMsg = line.slice(6);
+        try { errMsg = JSON.parse(errMsg).error || errMsg; } catch { /* keep raw */ }
+        // ECONNREFUSED: retry with fresh credentials
+        if (retryCount === 0 && errMsg.includes('ECONNREFUSED')) {
+          try { child.kill(); } catch { /* ignore */ }
+          console.log('[grpc-client] Stream connection refused, retrying with fresh credentials...');
+          const freshCreds = getCredentials();
+          yield* grpcStreamCallNode(freshCreds.port, freshCreds.csrfToken, grpcPath, body, retryCount + 1);
+          return;
+        }
+        throw new WindsurfError(errMsg, WindsurfErrorCode.CONNECTION_FAILED);
+      } else if (line === 'DONE') {
+        return;
+      }
+    } else if (!done) {
+      await new Promise<void>((resolve) => { resolveWait = resolve; });
+      resolveWait = null;
+    }
+  }
+
+  if (childError) throw childError;
+}
+
 // ============================================================================
 // Cascade Flow Implementation
 // ============================================================================
@@ -1205,7 +1314,7 @@ function shouldUseCascade(_modelEnum: number, modelUid?: string): boolean {
  * @param options - Chat options including model, messages, and callbacks
  * @returns Promise that resolves to the full response text
  */
-export function streamChat(
+export async function streamChat(
   credentials: WindsurfCredentials,
   options: StreamChatOptions
 ): Promise<string> {
@@ -1238,6 +1347,28 @@ export function streamChat(
 
   // Legacy RawGetChatMessage flow
   const body = buildChatRequest(apiKey, version, modelEnum, options.messages, modelName);
+
+  // When running under Bun, use Node.js wrapper to avoid HTTP/2 bug
+  if (IS_BUN) {
+    const rawPath = '/exa.language_server_pb.LanguageServerService/RawGetChatMessage';
+    const chunks: string[] = [];
+    try {
+      for await (const chunk of grpcStreamCallNode(credentials.port, credentials.csrfToken, rawPath, body)) {
+        const text = extractTextFromChunk(chunk);
+        if (text) {
+          chunks.push(text);
+          options.onChunk?.(text);
+        }
+      }
+      const fullText = chunks.join('');
+      options.onComplete?.(fullText);
+      return fullText;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      options.onError?.(error);
+      throw error;
+    }
+  }
 
   return new Promise((resolve, reject) => {
     let retryAttempted = false;
@@ -1353,6 +1484,17 @@ export async function* streamChatGenerator(
 
   // Legacy RawGetChatMessage flow
   const body = buildChatRequest(apiKey, version, modelEnum, options.messages, modelName);
+
+  // When running under Bun, use Node.js wrapper to avoid HTTP/2 bug
+  if (IS_BUN) {
+    const rawPath = '/exa.language_server_pb.LanguageServerService/RawGetChatMessage';
+    const gen = grpcStreamCallNode(credentials.port, credentials.csrfToken, rawPath, body);
+    for await (const chunk of gen) {
+      const text = extractTextFromChunk(chunk);
+      if (text) yield text;
+    }
+    return;
+  }
 
   let retryAttempted = false;
 
